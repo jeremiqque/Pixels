@@ -19,6 +19,7 @@ import {
   Crop,
   X,
   Check,
+  Trash,
 } from "@phosphor-icons/react"
 import { useTheme } from "next-themes"
 import { cn } from "@/lib/utils"
@@ -75,51 +76,95 @@ export default function DitherGenerator() {
 
   // Crop state
   const [cropMode, setCropMode] = useState(false)
-  const [cropDragging, setCropDragging] = useState(false)
-  const [cropStart, setCropStart] = useState<{ x: number; y: number } | null>(null)
-  const [cropEnd, setCropEnd] = useState<{ x: number; y: number } | null>(null)
+  const [cropBox, setCropBox] = useState<{ x: number; y: number; w: number; h: number } | null>(null)
+  const [cropDragHandle, setCropDragHandle] = useState<string | null>(null)
+  const [cropDragOrigin, setCropDragOrigin] = useState<{
+    mx: number; my: number; box: { x: number; y: number; w: number; h: number }
+  } | null>(null)
+
+  const enterCropMode = useCallback(() => {
+    if (!canvasRef.current) return
+    const rect = canvasRef.current.getBoundingClientRect()
+    setCropBox({ x: 0, y: 0, w: rect.width, h: rect.height })
+    setCropMode(true)
+  }, [])
 
   const exitCropMode = useCallback(() => {
     setCropMode(false)
-    setCropDragging(false)
-    setCropStart(null)
-    setCropEnd(null)
+    setCropBox(null)
+    setCropDragHandle(null)
+    setCropDragOrigin(null)
   }, [])
 
-  const handleCropMouseDown = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+  const handleCropHandleMouseDown = useCallback((e: React.MouseEvent, handle: string) => {
     e.preventDefault()
-    const rect = e.currentTarget.getBoundingClientRect()
-    const pt = { x: e.clientX - rect.left, y: e.clientY - rect.top }
-    setCropStart(pt)
-    setCropEnd(pt)
-    setCropDragging(true)
-  }, [])
+    e.stopPropagation()
+    if (!cropBox) return
+    setCropDragHandle(handle)
+    setCropDragOrigin({ mx: e.clientX, my: e.clientY, box: { ...cropBox } })
+  }, [cropBox])
 
-  const handleCropMouseMove = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    if (!cropDragging) return
-    const rect = e.currentTarget.getBoundingClientRect()
-    setCropEnd({ x: e.clientX - rect.left, y: e.clientY - rect.top })
-  }, [cropDragging])
+  // Global mouse move/up to drive handle dragging
+  useEffect(() => {
+    if (!cropDragHandle || !cropDragOrigin || !canvasRef.current) return
+    const canvasRect = canvasRef.current.getBoundingClientRect()
+    const W = canvasRect.width
+    const H = canvasRect.height
+    const MIN = 20
 
-  const handleCropMouseUp = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    if (!cropDragging) return
-    const rect = e.currentTarget.getBoundingClientRect()
-    setCropEnd({ x: e.clientX - rect.left, y: e.clientY - rect.top })
-    setCropDragging(false)
-  }, [cropDragging])
+    const onMove = (e: MouseEvent) => {
+      const dx = e.clientX - cropDragOrigin.mx
+      const dy = e.clientY - cropDragOrigin.my
+      const o = cropDragOrigin.box
+      let { x, y, w, h } = o
+
+      if (cropDragHandle === "move") {
+        x = Math.max(0, Math.min(o.x + dx, W - o.w))
+        y = Math.max(0, Math.min(o.y + dy, H - o.h))
+      } else {
+        if (cropDragHandle.includes("w")) {
+          const nx = Math.max(0, Math.min(o.x + dx, o.x + o.w - MIN))
+          w = o.w + (o.x - nx)
+          x = nx
+        }
+        if (cropDragHandle.includes("e")) {
+          w = Math.max(MIN, Math.min(o.w + dx, W - o.x))
+        }
+        if (cropDragHandle.includes("n")) {
+          const ny = Math.max(0, Math.min(o.y + dy, o.y + o.h - MIN))
+          h = o.h + (o.y - ny)
+          y = ny
+        }
+        if (cropDragHandle.includes("s")) {
+          h = Math.max(MIN, Math.min(o.h + dy, H - o.y))
+        }
+      }
+      setCropBox({ x, y, w, h })
+    }
+
+    const onUp = () => {
+      setCropDragHandle(null)
+      setCropDragOrigin(null)
+    }
+
+    window.addEventListener("mousemove", onMove)
+    window.addEventListener("mouseup", onUp)
+    return () => {
+      window.removeEventListener("mousemove", onMove)
+      window.removeEventListener("mouseup", onUp)
+    }
+  }, [cropDragHandle, cropDragOrigin])
 
   const applyCrop = useCallback(() => {
-    if (!cropStart || !cropEnd || !imgRef.current || !canvasRef.current) return
+    if (!cropBox || !imgRef.current || !canvasRef.current) return
     const displayRect = canvasRef.current.getBoundingClientRect()
     const scaleX = imgRef.current.naturalWidth / displayRect.width
     const scaleY = imgRef.current.naturalHeight / displayRect.height
 
-    const x1 = Math.round(Math.min(cropStart.x, cropEnd.x) * scaleX)
-    const y1 = Math.round(Math.min(cropStart.y, cropEnd.y) * scaleY)
-    const x2 = Math.round(Math.max(cropStart.x, cropEnd.x) * scaleX)
-    const y2 = Math.round(Math.max(cropStart.y, cropEnd.y) * scaleY)
-    const cropW = Math.max(1, x2 - x1)
-    const cropH = Math.max(1, y2 - y1)
+    const x1 = Math.round(cropBox.x * scaleX)
+    const y1 = Math.round(cropBox.y * scaleY)
+    const cropW = Math.max(1, Math.round(cropBox.w * scaleX))
+    const cropH = Math.max(1, Math.round(cropBox.h * scaleY))
 
     const out = document.createElement("canvas")
     out.width = cropW
@@ -131,7 +176,7 @@ export default function DitherGenerator() {
       setImageUrl(url)
       exitCropMode()
     })
-  }, [cropStart, cropEnd, exitCropMode])
+  }, [cropBox, exitCropMode])
 
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -141,11 +186,9 @@ export default function DitherGenerator() {
   useEffect(() => setMounted(true), [])
 
   useEffect(() => {
-    if (!imageUrl) {
-      imgRef.current = null
-      setImgLoaded(false)
-      return
-    }
+    setImgLoaded(false)
+    imgRef.current = null
+    if (!imageUrl) return
     const img = new window.Image()
     img.onload = () => {
       imgRef.current = img
@@ -194,8 +237,14 @@ export default function DitherGenerator() {
     postEffects,
   ])
 
+  const handleRemoveImage = useCallback(() => {
+    exitCropMode()
+    setImageUrl(null)
+  }, [exitCropMode])
+
   const handleFileSelect = useCallback((file: File) => {
     if (!file.type.startsWith("image/")) return
+    exitCropMode()
     const reader = new FileReader()
     reader.onload = (e) => {
       if (e.target?.result) setImageUrl(e.target.result as string)
@@ -249,14 +298,6 @@ export default function DitherGenerator() {
     return () => window.removeEventListener("paste", handlePaste)
   }, [handleFileSelect])
 
-  // Derived crop selection rect (in display px)
-  const cropRect = cropStart && cropEnd ? {
-    x: Math.min(cropStart.x, cropEnd.x),
-    y: Math.min(cropStart.y, cropEnd.y),
-    w: Math.abs(cropEnd.x - cropStart.x),
-    h: Math.abs(cropEnd.y - cropStart.y),
-  } : null
-  const hasCropSelection = cropRect && cropRect.w > 4 && cropRect.h > 4
 
   const shapeControlProps = {
     style: shapeStyle, setStyle: setShapeStyle,
@@ -311,7 +352,7 @@ export default function DitherGenerator() {
             "h-8 w-full gap-2 text-[11px] tracking-[0.05em] uppercase",
             cropMode && "border-foreground text-foreground"
           )}
-          onClick={() => cropMode ? exitCropMode() : setCropMode(true)}
+          onClick={() => cropMode ? exitCropMode() : enterCropMode()}
         >
           <Crop size={12} weight="regular" />
           {cropMode ? "Cancel Crop" : "Crop Image"}
@@ -326,14 +367,27 @@ export default function DitherGenerator() {
         <DownloadSimple size={12} weight="regular" />
         Download PNG
       </Button>
-      <Button
-        variant="outline"
-        className="h-8 w-full gap-2 text-[11px] tracking-[0.05em] uppercase"
-        onClick={() => fileInputRef.current?.click()}
-      >
-        <UploadSimple size={12} weight="regular" />
-        Upload Image
-      </Button>
+      <div className="flex gap-2">
+        <Button
+          variant="outline"
+          className="h-8 flex-1 gap-2 text-[11px] tracking-[0.05em] uppercase"
+          onClick={() => fileInputRef.current?.click()}
+        >
+          <UploadSimple size={12} weight="regular" />
+          Upload Image
+        </Button>
+        {imageUrl && (
+          <Button
+            variant="outline"
+            size="icon"
+            className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive hover:border-destructive"
+            onClick={handleRemoveImage}
+            title="Remove image"
+          >
+            <Trash size={12} weight="regular" />
+          </Button>
+        )}
+      </div>
       <p className="text-center text-[9px] tracking-wider text-muted-foreground/50">
         or paste · drag & drop
       </p>
@@ -417,88 +471,75 @@ export default function DitherGenerator() {
                 />
 
                 {/* Crop overlay */}
-                {cropMode && (
-                  <div
-                    className="absolute inset-0 cursor-crosshair select-none"
-                    onMouseDown={handleCropMouseDown}
-                    onMouseMove={handleCropMouseMove}
-                    onMouseUp={handleCropMouseUp}
-                  >
-                    {/* dim everything */}
-                    <div className="absolute inset-0 bg-black/40" />
+                {cropMode && cropBox && (
+                  <div className="absolute inset-0 select-none" style={{ cursor: cropDragHandle ? "inherit" : "default" }}>
+                    {/* Dim areas outside crop box */}
+                    <div className="pointer-events-none absolute bg-black/50" style={{ left: 0, top: 0, width: "100%", height: cropBox.y }} />
+                    <div className="pointer-events-none absolute bg-black/50" style={{ left: 0, top: cropBox.y + cropBox.h, width: "100%", bottom: 0 }} />
+                    <div className="pointer-events-none absolute bg-black/50" style={{ left: 0, top: cropBox.y, width: cropBox.x, height: cropBox.h }} />
+                    <div className="pointer-events-none absolute bg-black/50" style={{ left: cropBox.x + cropBox.w, top: cropBox.y, right: 0, height: cropBox.h }} />
 
-                    {/* selection box with surrounding dim via box-shadow */}
-                    {cropRect && cropRect.w > 2 && cropRect.h > 2 && (
+                    {/* Crop box */}
+                    <div
+                      className="absolute border border-white/80"
+                      style={{ left: cropBox.x, top: cropBox.y, width: cropBox.w, height: cropBox.h }}
+                    >
+                      {/* Rule-of-thirds grid */}
+                      <div className="pointer-events-none absolute inset-0">
+                        <div className="absolute top-1/3 left-0 right-0 border-t border-white/20" />
+                        <div className="absolute top-2/3 left-0 right-0 border-t border-white/20" />
+                        <div className="absolute left-1/3 top-0 bottom-0 border-l border-white/20" />
+                        <div className="absolute left-2/3 top-0 bottom-0 border-l border-white/20" />
+                      </div>
+
+                      {/* Interior — drag to move */}
                       <div
-                        className="absolute border border-white/90"
-                        style={{
-                          left: cropRect.x,
-                          top: cropRect.y,
-                          width: cropRect.w,
-                          height: cropRect.h,
-                          boxShadow: "0 0 0 9999px rgba(0,0,0,0.45)",
-                        }}
-                      >
-                        {/* corner handles */}
-                        {[
-                          "top-0 left-0 -translate-x-px -translate-y-px",
-                          "top-0 right-0 translate-x-px -translate-y-px",
-                          "bottom-0 left-0 -translate-x-px translate-y-px",
-                          "bottom-0 right-0 translate-x-px translate-y-px",
-                        ].map((pos, i) => (
-                          <div
-                            key={i}
-                            className={`absolute h-2.5 w-2.5 border-2 border-white bg-transparent ${pos}`}
-                          />
-                        ))}
+                        className="absolute inset-3"
+                        style={{ cursor: "move" }}
+                        onMouseDown={(e) => handleCropHandleMouseDown(e, "move")}
+                      />
 
-                        {/* size label */}
-                        {hasCropSelection && (
-                          <div className="absolute -top-6 left-0 text-[9px] tracking-wider text-white/80 tabular-nums whitespace-nowrap">
-                            {Math.round(cropRect.w)} × {Math.round(cropRect.h)}
-                          </div>
-                        )}
+                      {/* Edge handles */}
+                      <div className="absolute left-1/2 top-0 -translate-x-1/2 -translate-y-1/2 h-2 w-8 bg-white rounded-sm" style={{ cursor: "ns-resize" }} onMouseDown={(e) => handleCropHandleMouseDown(e, "n")} />
+                      <div className="absolute left-1/2 bottom-0 -translate-x-1/2 translate-y-1/2 h-2 w-8 bg-white rounded-sm" style={{ cursor: "ns-resize" }} onMouseDown={(e) => handleCropHandleMouseDown(e, "s")} />
+                      <div className="absolute left-0 top-1/2 -translate-x-1/2 -translate-y-1/2 w-2 h-8 bg-white rounded-sm" style={{ cursor: "ew-resize" }} onMouseDown={(e) => handleCropHandleMouseDown(e, "w")} />
+                      <div className="absolute right-0 top-1/2 translate-x-1/2 -translate-y-1/2 w-2 h-8 bg-white rounded-sm" style={{ cursor: "ew-resize" }} onMouseDown={(e) => handleCropHandleMouseDown(e, "e")} />
+
+                      {/* Corner handles */}
+                      <div className="absolute top-0 left-0 -translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-sm" style={{ cursor: "nwse-resize" }} onMouseDown={(e) => handleCropHandleMouseDown(e, "nw")} />
+                      <div className="absolute top-0 right-0 translate-x-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-sm" style={{ cursor: "nesw-resize" }} onMouseDown={(e) => handleCropHandleMouseDown(e, "ne")} />
+                      <div className="absolute bottom-0 left-0 -translate-x-1/2 translate-y-1/2 w-3 h-3 bg-white rounded-sm" style={{ cursor: "nesw-resize" }} onMouseDown={(e) => handleCropHandleMouseDown(e, "sw")} />
+                      <div className="absolute bottom-0 right-0 translate-x-1/2 translate-y-1/2 w-3 h-3 bg-white rounded-sm" style={{ cursor: "nwse-resize" }} onMouseDown={(e) => handleCropHandleMouseDown(e, "se")} />
+
+                      {/* Size label */}
+                      <div className="pointer-events-none absolute -top-6 left-0 text-[9px] tracking-wider text-white/80 tabular-nums whitespace-nowrap">
+                        {Math.round(cropBox.w)} × {Math.round(cropBox.h)}
                       </div>
-                    )}
 
-                    {/* instructions when no selection yet */}
-                    {!cropRect && (
-                      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                        <span className="text-white/70 text-[10px] tracking-[0.2em] uppercase">
-                          Drag to select crop area
-                        </span>
-                      </div>
-                    )}
-
-                    {/* action buttons */}
-                    {hasCropSelection && !cropDragging && (
-                      <div
-                        className="absolute flex gap-1.5 pointer-events-auto"
-                        style={{
-                          top: Math.min(
-                            (cropRect?.y ?? 0) + (cropRect?.h ?? 0) + 8,
-                            window.innerHeight - 60
-                          ),
-                          left: cropRect?.x ?? 0,
-                        }}
-                        onMouseDown={(e) => e.stopPropagation()}
-                      >
-                        <button
-                          onClick={applyCrop}
-                          className="flex items-center gap-1.5 bg-foreground px-2.5 py-1.5 text-background text-[10px] tracking-[0.1em] uppercase transition-opacity hover:opacity-80"
+                      {/* Action buttons */}
+                      {!cropDragHandle && (
+                        <div
+                          className="absolute flex gap-1.5"
+                          style={{ top: cropBox.h + 8, left: 0 }}
+                          onMouseDown={(e) => e.stopPropagation()}
                         >
-                          <Check size={10} weight="bold" />
-                          Apply
-                        </button>
-                        <button
-                          onClick={exitCropMode}
-                          className="flex items-center gap-1.5 border border-white/30 bg-black/60 px-2.5 py-1.5 text-white text-[10px] tracking-[0.1em] uppercase backdrop-blur-sm transition-opacity hover:opacity-80"
-                        >
-                          <X size={10} weight="bold" />
-                          Cancel
-                        </button>
-                      </div>
-                    )}
+                          <button
+                            onClick={applyCrop}
+                            className="flex items-center gap-1.5 bg-foreground px-2.5 py-1.5 text-background text-[10px] tracking-[0.1em] uppercase transition-opacity hover:opacity-80"
+                          >
+                            <Check size={10} weight="bold" />
+                            Apply
+                          </button>
+                          <button
+                            onClick={exitCropMode}
+                            className="flex items-center gap-1.5 border border-white/30 bg-black/60 px-2.5 py-1.5 text-white text-[10px] tracking-[0.1em] uppercase backdrop-blur-sm transition-opacity hover:opacity-80"
+                          >
+                            <X size={10} weight="bold" />
+                            Cancel
+                          </button>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
@@ -548,15 +589,26 @@ export default function DitherGenerator() {
             </Button>
 
             {imageUrl && (
-              <Button
-                variant="outline"
-                size="icon"
-                className={cn("h-9 w-9 shrink-0", cropMode && "border-foreground")}
-                onClick={() => cropMode ? exitCropMode() : setCropMode(true)}
-                title="Crop image"
-              >
-                <Crop size={14} weight="regular" />
-              </Button>
+              <>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className={cn("h-9 w-9 shrink-0", cropMode && "border-foreground")}
+                  onClick={() => cropMode ? exitCropMode() : enterCropMode()}
+                  title="Crop image"
+                >
+                  <Crop size={14} weight="regular" />
+                </Button>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-9 w-9 shrink-0 text-muted-foreground hover:text-destructive hover:border-destructive"
+                  onClick={handleRemoveImage}
+                  title="Remove image"
+                >
+                  <Trash size={14} weight="regular" />
+                </Button>
+              </>
             )}
 
             <Sheet>
